@@ -56,7 +56,9 @@ See
 [the Hyprland wiki](https://wiki.hyprland.org/Hypr-Ecosystem/xdg-desktop-portal-hyprland/)
 
 RemoteDesktop supports keyboard and pointer control, optionally combined with a
-ScreenCast session. New grants require the share picker's explicit consent.
+ScreenCast session. New grants require the share picker's explicit control
+consent, separately from screen selection. Its Yes/No dialog does not offer a
+view-only downgrade.
 EIS keyboard input releases held keys when the keyboard stops emulating, is
 removed, or disconnects; pointer stop events do not reset keyboard modifiers.
 
@@ -71,7 +73,12 @@ cc -Wall -Wextra -Werror tests/remote-desktop-eis.c \
 python3 tests/remote-desktop.py --eis-client /tmp/remote-desktop-eis
 ```
 
-Approve the real screen selection and control dialogs. The test consumes 30
-PipeWire frames and observes compositor-delivered D-Bus and EIS input, including
-keyboard stop/resume, pointer stop without modifier loss, and held-key disconnect.
-Run again with `--deny` and reject either native dialog to check consent refusal.
+Approve the real screen selection and control dialogs. The test animates real
+window content and counts 30 received PipeWire video buffers. It observes
+compositor-delivered D-Bus pointer/keyboard input before switching to EIS (the
+public frontend forbids Notify methods after ConnectToEIS), then checks keyboard
+stop/resume, pointer stop without modifier loss, and held-key disconnect.
+Modifier release checks use hardware keycodes because the active Wayland
+keyboard's keymap can change the release keysym.
+Run again with `--deny` and reject either native dialog to check consent refusal
+and frontend session closure.

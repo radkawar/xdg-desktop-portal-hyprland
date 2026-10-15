@@ -32,6 +32,7 @@ path = "/org/freedesktop/portal/desktop"
 rd = "org.freedesktop.portal.RemoteDesktop"
 sc = "org.freedesktop.portal.ScreenCast"
 responses = {}
+closed_sessions = set()
 condition = threading.Condition()
 events = []
 result = {"passed": False}
@@ -44,6 +45,15 @@ def response(_bus, _sender, object_path, _interface, _signal, parameters):
 
 
 subscription = bus.signal_subscribe(name, "org.freedesktop.portal.Request", "Response", None, None, Gio.DBusSignalFlags.NONE, response)
+
+
+def session_closed(_bus, _sender, object_path, _interface, _signal, _parameters):
+    with condition:
+        closed_sessions.add(object_path)
+        condition.notify_all()
+
+
+session_subscription = bus.signal_subscribe(name, "org.freedesktop.portal.Session", "Closed", None, None, Gio.DBusSignalFlags.NONE, session_closed)
 
 
 def call(interface, method, signature, values):
@@ -67,13 +77,16 @@ def options(**values):
 
 window = Gtk.Window(title="RemoteDesktop native event witness")
 window.fullscreen()
-window.add(Gtk.Label(label="RemoteDesktop native test\nApprove the native screen picker and control consent.\nThe test will click here and type through the portal."))
+label = Gtk.Label(label="RemoteDesktop native test\nApprove the native screen picker and control consent.")
+window.add(label)
 window.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.KEY_PRESS_MASK | Gdk.EventMask.KEY_RELEASE_MASK)
-window.connect("key-press-event", lambda _w, event: events.append(("press", event.keyval, int(event.state))) or True)
-window.connect("key-release-event", lambda _w, event: events.append(("release", event.keyval, int(event.state))) or True)
-window.connect("button-press-event", lambda _w, event: events.append(("button", int(event.button), 0)) or True)
+window.connect("key-press-event", lambda _w, event: events.append(("press", event.keyval, int(event.state), event.hardware_keycode)) or True)
+window.connect("key-release-event", lambda _w, event: events.append(("release", event.keyval, int(event.state), event.hardware_keycode)) or True)
+window.connect("button-press-event", lambda _w, event: events.append(("button", int(event.button), 0, 0)) or True)
 window.connect("destroy", lambda _w: Gtk.main_quit())
 window.show_all()
+# Damage-driven compositors need changing real window content to produce frames.
+GLib.timeout_add(100, lambda: label.set_text("RemoteDesktop native video and input witness\n" + str(time.monotonic_ns())) or True)
 
 
 def run():
@@ -114,7 +127,7 @@ def run():
         reply, fds = bus.call_with_unix_fd_list_sync(name, path, sc, "OpenPipeWireRemote", GLib.Variant("(oa{sv})", (session, {})), None, Gio.DBusCallFlags.NONE, 15000, None, None)
         fd = fds.get(reply.unpack()[0])
         try:
-            pipeline = Gst.parse_launch("pipewiresrc name=capture num-buffers=30 ! fakesink name=witness signal-handoffs=true sync=false")
+            pipeline = Gst.parse_launch("pipewiresrc name=capture num-buffers=30 ! video/x-raw ! fakesink name=witness signal-handoffs=true sync=false")
             source = pipeline.get_by_name("capture")
             source.set_property("fd", fd)
             source.set_property("path", str(node))
@@ -130,11 +143,23 @@ def run():
                     raise RuntimeError("PipeWire consumer failed: " + str(error) + ": " + str(debug))
             finally:
                 pipeline.set_state(Gst.State.NULL)
+                result["pipewire_frames"] = len(frames)
         finally:
             os.close(fd)
-        result["pipewire_frames"] = len(frames)
         if len(frames) != 30:
             raise RuntimeError("PipeWire consumer received " + str(len(frames)) + " buffers, expected 30")
+        # The public frontend forbids Notify* once ConnectToEIS is used.
+        # Exercise lindm's D-Bus pointer and key path before switching to EIS.
+        width, height = properties["size"]
+        call(rd, "NotifyPointerMotionAbsolute", "(oa{sv}udd)", (session, {}, node, width / 2.0, height / 2.0))
+        call(rd, "NotifyPointerButton", "(oa{sv}iu)", (session, {}, 272, 1))
+        call(rd, "NotifyPointerButton", "(oa{sv}iu)", (session, {}, 272, 0))
+        call(rd, "NotifyKeyboardKeycode", "(oa{sv}iu)", (session, {}, 32, 1))
+        call(rd, "NotifyKeyboardKeycode", "(oa{sv}iu)", (session, {}, 32, 0))
+        time.sleep(0.3)
+        if not any(kind == "press" and value == ord("d") for kind, value, _state, _code in events) or not any(kind == "button" for kind, _value, _state, _code in events):
+            raise RuntimeError("missing compositor-delivered D-Bus pointer or key: " + repr(events))
+        result["dbus_pointer_keyboard_delivered"] = True
         reply, fds = bus.call_with_unix_fd_list_sync(name, path, rd, "ConnectToEIS", GLib.Variant("(oa{sv})", (session, {})), None, Gio.DBusCallFlags.NONE, 15000, None, None)
         fd = fds.get(reply.unpack()[0])
         try:
@@ -144,23 +169,28 @@ def run():
         if eis.returncode:
             raise RuntimeError("EIS client failed: " + eis.stderr)
         result["eis"] = eis.stdout.strip()
-        # The EIS click focused the witness; now exercise lindm's D-Bus key path.
-        call(rd, "NotifyKeyboardKeycode", "(oa{sv}iu)", (session, {}, 32, 1))
-        call(rd, "NotifyKeyboardKeycode", "(oa{sv}iu)", (session, {}, 32, 0))
         time.sleep(0.5)
-        presses = [key for kind, key, _state in events if kind == "press"]
+        presses = [key for kind, key, _state, _code in events if kind == "press"]
         if ord("d") not in presses or [key for key in presses if key in (ord("A"), ord("B"), ord("a"))] != [ord("A"), ord("B"), ord("a")]:
             raise RuntimeError("missing D-Bus key, pointer-stop modifier retention, or keyboard-stop release: " + repr(events))
-        for key in (65505, 65507):  # XKB Shift_L and Control_L
-            if not any(kind == "release" and value == key for kind, value, _state in events):
+        # Modifier keysyms may change when the active Wayland keyboard changes;
+        # GDK's hardware keycode identifies the actual released evdev key.
+        for keycode in (42 + 8, 29 + 8):  # KEY_LEFTSHIFT and KEY_LEFTCTRL
+            if not any(kind == "release" and code == keycode for kind, _value, _state, code in events):
                 raise RuntimeError("missing synthetic held-key release: " + repr(events))
-        if not any(kind == "button" for kind, _key, _state in events):
+        if sum(kind == "button" for kind, _key, _state, _code in events) < 2:
             raise RuntimeError("no compositor-delivered EIS pointer click")
         result["passed"] = True
     except Exception as error:
         result["error"] = str(error)
     finally:
-        if session:
+        if session and result.get("denied"):
+            with condition:
+                result["session_closed"] = condition.wait_for(lambda: session in closed_sessions, timeout=5)
+            if not result["session_closed"]:
+                result["error"] = "frontend did not close the refused session"
+                result["passed"] = False
+        if session and session not in closed_sessions:
             try:
                 bus.call_sync(name, session, "org.freedesktop.portal.Session", "Close", None, None, Gio.DBusCallFlags.NONE, 15000, None)
             except GLib.Error as error:
@@ -173,5 +203,6 @@ def run():
 GLib.timeout_add(500, lambda: threading.Thread(target=run, daemon=True).start() or False)
 Gtk.main()
 bus.signal_unsubscribe(subscription)
+bus.signal_unsubscribe(session_subscription)
 print(json.dumps(result, sort_keys=True), flush=True)
 raise SystemExit(0 if result["passed"] else 1)
