@@ -370,7 +370,7 @@ CRemoteDesktopPortal::SSession::~SSession() {
 }
 
 void CRemoteDesktopPortal::SSession::releaseEISKeys() {
-    if (!virtualKeyboard || !xkbState)
+    if (!virtualKeyboard || !xkbState || eisPressedKeys.none())
         return;
 
     const auto TIME = currentTimeMs();
