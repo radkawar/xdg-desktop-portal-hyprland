@@ -17,12 +17,14 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, Gio, GLib, Gtk
+gi.require_version("Gst", "1.0")
+from gi.repository import Gdk, Gio, GLib, Gst, Gtk
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--eis-client", required=True)
 parser.add_argument("--deny", action="store_true", help="expect denial in either native dialog")
 args = parser.parse_args()
+Gst.init(None)
 
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
 name = "org.freedesktop.portal.Desktop"
@@ -112,12 +114,27 @@ def run():
         reply, fds = bus.call_with_unix_fd_list_sync(name, path, sc, "OpenPipeWireRemote", GLib.Variant("(oa{sv})", (session, {})), None, Gio.DBusCallFlags.NONE, 15000, None, None)
         fd = fds.get(reply.unpack()[0])
         try:
-            video = subprocess.run(["gst-launch-1.0", "-q", "pipewiresrc", "fd=" + str(fd), "path=" + str(node), "num-buffers=30", "!", "fakesink"], pass_fds=(fd,), capture_output=True, text=True, timeout=30)
+            pipeline = Gst.parse_launch("pipewiresrc name=capture num-buffers=30 ! fakesink name=witness signal-handoffs=true sync=false")
+            source = pipeline.get_by_name("capture")
+            source.set_property("fd", fd)
+            source.set_property("path", str(node))
+            frames = []
+            pipeline.get_by_name("witness").connect("handoff", lambda _sink, _buffer, _pad: frames.append(True))
+            try:
+                pipeline.set_state(Gst.State.PLAYING)
+                message = pipeline.get_bus().timed_pop_filtered(30 * Gst.SECOND, Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                if message is None:
+                    raise RuntimeError("PipeWire consumer timed out")
+                if message.type == Gst.MessageType.ERROR:
+                    error, debug = message.parse_error()
+                    raise RuntimeError("PipeWire consumer failed: " + str(error) + ": " + str(debug))
+            finally:
+                pipeline.set_state(Gst.State.NULL)
         finally:
             os.close(fd)
-        if video.returncode:
-            raise RuntimeError("PipeWire consumer failed: " + video.stderr)
-        result["pipewire_frames"] = 30
+        result["pipewire_frames"] = len(frames)
+        if len(frames) != 30:
+            raise RuntimeError("PipeWire consumer received " + str(len(frames)) + " buffers, expected 30")
         reply, fds = bus.call_with_unix_fd_list_sync(name, path, rd, "ConnectToEIS", GLib.Variant("(oa{sv})", (session, {})), None, Gio.DBusCallFlags.NONE, 15000, None, None)
         fd = fds.get(reply.unpack()[0])
         try:

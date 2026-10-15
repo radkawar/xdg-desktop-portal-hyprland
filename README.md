@@ -62,7 +62,8 @@ removed, or disconnects; pointer stop events do not reset keyboard modifiers.
 
 For the interactive native regression, compile `tests/remote-desktop-eis.c`
 against `libei-1.0`, then run the following in a real Hyprland session with a
-US keymap, Python GObject/GTK3, and GStreamer's PipeWire source installed:
+US keymap, Python GObject/GTK3, GStreamer GI typelibs, and GStreamer's PipeWire
+source installed:
 
 ```sh
 cc -Wall -Wextra -Werror tests/remote-desktop-eis.c \
