@@ -118,9 +118,6 @@ def run():
         if video.returncode:
             raise RuntimeError("PipeWire consumer failed: " + video.stderr)
         result["pipewire_frames"] = 30
-        # Exercise the D-Bus path used by lindm before exercising EIS lifecycle.
-        call(rd, "NotifyKeyboardKeycode", "(oa{sv}iu)", (session, {}, 32, 1))
-        call(rd, "NotifyKeyboardKeycode", "(oa{sv}iu)", (session, {}, 32, 0))
         reply, fds = bus.call_with_unix_fd_list_sync(name, path, rd, "ConnectToEIS", GLib.Variant("(oa{sv})", (session, {})), None, Gio.DBusCallFlags.NONE, 15000, None, None)
         fd = fds.get(reply.unpack()[0])
         try:
@@ -130,6 +127,9 @@ def run():
         if eis.returncode:
             raise RuntimeError("EIS client failed: " + eis.stderr)
         result["eis"] = eis.stdout.strip()
+        # The EIS click focused the witness; now exercise lindm's D-Bus key path.
+        call(rd, "NotifyKeyboardKeycode", "(oa{sv}iu)", (session, {}, 32, 1))
+        call(rd, "NotifyKeyboardKeycode", "(oa{sv}iu)", (session, {}, 32, 0))
         time.sleep(0.5)
         presses = [key for kind, key, _state in events if kind == "press"]
         if ord("d") not in presses or [key for key in presses if key in (ord("A"), ord("B"), ord("a"))] != [ord("A"), ord("B"), ord("a")]:
