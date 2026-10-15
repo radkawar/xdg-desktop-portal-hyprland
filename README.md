@@ -15,10 +15,12 @@ hyprutils
 hyprwayland-scanner
 libdrm
 libpipewire-0.3
+libei (libeis-1.0)
 libspa-0.2
 sdbus-cpp
 wayland-client
 wayland-protocols
+xkbcommon
 ```
 
 Then run the build and install command:
@@ -52,3 +54,23 @@ There are two reasons for the above:
 
 See
 [the Hyprland wiki](https://wiki.hyprland.org/Hypr-Ecosystem/xdg-desktop-portal-hyprland/)
+
+RemoteDesktop supports keyboard and pointer control, optionally combined with a
+ScreenCast session. New grants require the share picker's explicit consent.
+EIS keyboard input releases held keys when the keyboard stops emulating, is
+removed, or disconnects; pointer stop events do not reset keyboard modifiers.
+
+For the interactive native regression, compile `tests/remote-desktop-eis.c`
+against `libei-1.0`, then run the following in a real Hyprland session with a
+US keymap, Python GObject/GTK3, and GStreamer's PipeWire source installed:
+
+```sh
+cc -Wall -Wextra -Werror tests/remote-desktop-eis.c \
+  $(pkg-config --cflags --libs libei-1.0) -o /tmp/remote-desktop-eis
+python3 tests/remote-desktop.py --eis-client /tmp/remote-desktop-eis
+```
+
+Approve the real screen selection and control dialogs. The test consumes 30
+PipeWire frames and observes compositor-delivered D-Bus and EIS input, including
+keyboard stop/resume, pointer stop without modifier loss, and held-key disconnect.
+Run again with `--deny` and reject either native dialog to check consent refusal.

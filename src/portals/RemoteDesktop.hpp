@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <bitset>
+#include <linux/input-event-codes.h>
 #include <vector>
 #include <sdbus-c++/sdbus-c++.h>
 #include <xkbcommon/xkbcommon.h>
@@ -83,6 +85,7 @@ class CRemoteDesktopPortal {
     struct SSession {
         SSession(const std::string& app, const sdbus::ObjectPath& req, const sdbus::ObjectPath& sess) : appid(app), requestHandle(req), sessionHandle(sess) {}
         ~SSession();
+        void                          releaseEISKeys();
 
         std::string                   appid;
         sdbus::ObjectPath             requestHandle;
@@ -118,6 +121,7 @@ class CRemoteDesktopPortal {
         struct eis_seat*        eisSeat     = nullptr;
         struct eis_device*      eisPointer  = nullptr;
         struct eis_device*      eisKeyboard = nullptr;
+        std::bitset<KEY_CNT>    eisPressedKeys;
         std::vector<SEISRegion> eisPointerRegions;
         int                     eisFd    = -1; // fd to poll for EIS events
         bool                    eisReady = false;

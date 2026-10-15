@@ -346,6 +346,7 @@ CRemoteDesktopPortal::~CRemoteDesktopPortal() {
 // ─── Session management ──────────────────────────────────────────
 
 CRemoteDesktopPortal::SSession::~SSession() {
+    releaseEISKeys();
     if (xkbState)
         xkb_state_unref(xkbState);
     releaseKeymap(keymap);
@@ -366,6 +367,22 @@ CRemoteDesktopPortal::SSession::~SSession() {
         eis = nullptr;
     }
     eisFd = -1;
+}
+
+void CRemoteDesktopPortal::SSession::releaseEISKeys() {
+    if (!virtualKeyboard || !xkbState)
+        return;
+
+    const auto TIME = currentTimeMs();
+    for (size_t key = 0; key < eisPressedKeys.size(); ++key) {
+        if (!eisPressedKeys[key])
+            continue;
+        virtualKeyboard->sendKey(TIME, key, 0);
+        xkb_state_update_key(xkbState, key + 8, XKB_KEY_UP);
+    }
+    eisPressedKeys.reset();
+    sendModifiers(virtualKeyboard.get(), xkbState, activeKeysymModifiers(keysymModifiers));
+    wl_display_flush(g_pPortalManager->m_sWaylandConnection.display);
 }
 
 // Regions are advertised per output rather than as one bounding box, so a client can
@@ -459,6 +476,7 @@ void CRemoteDesktopPortal::removeEISKeyboardDevice(SSession* session, bool notif
     if (!session->eisKeyboard)
         return;
 
+    session->releaseEISKeys();
     if (notifyClient)
         eis_device_remove(session->eisKeyboard);
     eis_device_unref(session->eisKeyboard);
@@ -1125,6 +1143,11 @@ void CRemoteDesktopPortal::processEISEvents() {
                         removeEISKeyboardDevice(s.get(), false);
                     break;
                 }
+                case EIS_EVENT_DEVICE_STOP_EMULATING: {
+                    if (eis_event_get_device(event) == s->eisKeyboard)
+                        s->releaseEISKeys();
+                    break;
+                }
                 case EIS_EVENT_POINTER_MOTION: {
                     if (s->virtualPointer) {
                         double dx = eis_event_pointer_get_dx(event);
@@ -1208,6 +1231,9 @@ void CRemoteDesktopPortal::processEISEvents() {
                     if (s->virtualKeyboard) {
                         uint32_t key   = eis_event_keyboard_get_key(event);
                         uint32_t state = eis_event_keyboard_get_key_is_press(event) ? 1 : 0;
+                        if (key >= s->eisPressedKeys.size() || s->eisPressedKeys[key] == (state == 1))
+                            break;
+                        s->eisPressedKeys[key] = state == 1;
                         s->virtualKeyboard->sendKey(time, key, state);
                         xkb_state_update_key(s->xkbState, key + 8, state == 1 ? XKB_KEY_DOWN : XKB_KEY_UP);
                         sendModifiers(s->virtualKeyboard.get(), s->xkbState, activeKeysymModifiers(s->keysymModifiers));
